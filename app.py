@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- Supabase Connection ---
-# --- Supabase Connection ---
-SUPABASE_URL = "YOUR_SUPABASE_URL"
-SUPABASE_KEY = "YOUR_SUPABASE_KEY"
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
@@ -86,9 +86,9 @@ total_sales = df['total_amount'].sum()
 total_orders = len(df)
 avg_order_value = df['total_amount'].mean() if total_orders > 0 else 0
 
-col1.metric("Total Sales", f"${total_sales:,.2f}")
+col1.metric("Total Sales", f"₹{total_sales:,.2f}")
 col2.metric("Total Orders", f"{total_orders}")
-col3.metric("Average Order Value", f"${avg_order_value:,.2f}")
+col3.metric("Average Order Value", f"₹{avg_order_value:,.2f}")
 
 st.markdown("---")
 
