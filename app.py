@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- Supabase Connection ---
-SUPABASE_URL = "https://pyewierskypopedfjkcl.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB5ZXdpZXJza3lwb3BlZGZqa2NsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg4NjYwNzQsImV4cCI6MjA3NDQ0MjA3NH0.2KGGJBQJDSQc6AImR43Q4aYU8Oj97BsBCvbs2FTLW5Y"
-
+# --- Supabase Connection ---
+SUPABASE_URL = "YOUR_SUPABASE_URL"
+SUPABASE_KEY = "YOUR_SUPABASE_KEY"
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
