@@ -4,9 +4,10 @@ import json
 from supabase import create_client, Client
 import matplotlib.pyplot as plt
 import seaborn as sns
+from itertools import combinations
+from collections import Counter
 
 # --- Supabase Connection ---
-# Use Streamlit's secrets management for security
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -17,7 +18,7 @@ except Exception:
 
 
 # --- Data Fetching and Caching ---
-@st.cache_data(ttl=600)  # Cache data for 10 minutes
+@st.cache_data(ttl=600)
 def fetch_data():
     try:
         response = supabase.table('Orders').select('*').gte('id', 70).execute()
@@ -28,15 +29,13 @@ def fetch_data():
 
 # --- Data Processing Functions ---
 def process_data(df):
-    # Convert data types and create date column
+    # Basic data cleaning and type conversion
     df['created_at'] = pd.to_datetime(df['created_at'])
     df['date'] = df['created_at'].dt.date
     df['total_amount'] = pd.to_numeric(df['total_amount'], errors='coerce').fillna(0)
-    
-    # Fill missing location/user names
     df['name'].fillna('Vasant Kunj', inplace=True)
 
-    # Map users to stores
+    # Store mapping
     sf_staff = ['Isha', 'Kunal', 'Pranav']
     df['store'] = df['name'].apply(lambda x: 'SF' if x in sf_staff else 'VK')
 
@@ -49,27 +48,44 @@ def process_data(df):
 
     df['items'] = df['orders'].apply(extract_items)
     
+    # Discount calculation
     def calculate_subtotal(items_list):
         if not isinstance(items_list, list): return 0
-        subtotal = 0
-        for item in items_list:
-            price = item.get('price', 0)
-            quantity = item.get('quantity', 0)
-            cones = item.get('cones', 0)
-            subtotal += (price * quantity) + (cones * 20)
-        return subtotal
+        return sum((item.get('price', 0) * item.get('quantity', 0)) + (item.get('cones', 0) * 20) for item in items_list)
 
     df['subtotal'] = df['items'].apply(calculate_subtotal)
     df['total_with_gst'] = df['subtotal'] * 1.05
     df['discount'] = (df['total_with_gst'] - df['total_amount']).clip(lower=0)
     df['has_discount'] = df['discount'] > 0.01
 
-    # Explode dataframe for item-level analysis
-    df_items = df.explode('items').reset_index(drop=True)
-    df_items['item_name'] = df_items['items'].apply(lambda x: x.get('name') if isinstance(x, dict) else None)
-    df_items['item_quantity'] = df_items['items'].apply(lambda x: x.get('quantity') if isinstance(x, dict) else 0)
+    # Exploded dataframe for item-level analysis
+    df_items = df.explode('items').reset_index(drop=True).dropna(subset=['items'])
+    df_items['item_name'] = df_items['items'].apply(lambda x: x.get('name'))
+    df_items['item_quantity'] = df_items['items'].apply(lambda x: x.get('quantity', 0))
+    df_items['item_category'] = df_items['items'].apply(lambda x: x.get('category', 'Unknown'))
+    df_items['item_revenue'] = df_items['items'].apply(lambda x: x.get('price', 0) * x.get('quantity', 0))
     
-    return df, df_items
+    # --- New Metrics Calculations ---
+    
+    # 1. Sales by Category
+    sales_by_category = df_items.groupby('item_category')['item_revenue'].sum().sort_values(ascending=False)
+    
+    # 2. Items per Order
+    df['items_per_order'] = df['items'].apply(lambda cart: sum(item.get('quantity', 0) for item in cart))
+    items_dist = df['items_per_order'].value_counts().sort_index()
+
+    # 3. Most Common Pairings
+    order_item_lists = df_items.loc[df_items['item_name'].notna()].groupby('id')['item_name'].apply(lambda x: sorted(list(x)))
+    all_pairs = Counter()
+    for item_list in order_item_lists:
+        if len(item_list) > 1:
+            all_pairs.update(combinations(item_list, 2))
+    
+    top_pairs_df = pd.DataFrame(all_pairs.most_common(10), columns=['pair', 'count'])
+    # --- NEW: Calculate total pairings count ---
+    total_pair_count = sum(all_pairs.values())
+
+    return df, df_items, sales_by_category, items_dist, top_pairs_df, total_pair_count
 
 # --- Main Dashboard UI ---
 st.set_page_config(layout="wide")
@@ -78,13 +94,13 @@ st.title("🍦 Ice Cream Sales Dashboard")
 df_raw = fetch_data()
 
 if df_raw.empty:
-    st.warning("No data loaded. Please check your Supabase connection and table name ('Orders').")
+    st.warning("No data loaded. Please check your Supabase connection.")
     st.stop()
 
-df, df_items = process_data(df_raw.copy())
+# --- UPDATED: Unpack new total_pair_count variable ---
+df, df_items, sales_by_category, items_dist, top_pairs_df, total_pair_count = process_data(df_raw.copy())
 
-
-# --- Dashboard Layout ---
+# --- Sidebar and KPIs ---
 st.sidebar.header("Dashboard Controls")
 if st.sidebar.button("Refresh Data"):
     st.cache_data.clear()
@@ -92,77 +108,80 @@ if st.sidebar.button("Refresh Data"):
 
 st.subheader("Key Metrics")
 col1, col2, col3, col4 = st.columns(4)
-total_sales = df['total_amount'].sum()
-total_orders = len(df)
-avg_order_value = df['total_amount'].mean() if total_orders > 0 else 0
-# total_discounts = df['discount'].sum()
-
-col1.metric("Total Sales", f"₹{total_sales:,.2f}")
-col2.metric("Total Orders", f"{total_orders}")
-col3.metric("Average Order Value", f"₹{avg_order_value:,.2f}")
-# col4.metric("Total Discounts Given", f"₹{total_discounts:,.2f}")
-
+col1.metric("Total Sales", f"₹{df['total_amount'].sum():,.2f}")
+col2.metric("Total Orders", f"{len(df)}")
+col3.metric("Average Order Value", f"₹{df['total_amount'].mean():,.2f}")
+# col4.metric("Total Discounts Given", f"₹{df['discount'].sum():,.2f}")
 st.markdown("---")
 
-
+# --- Sales & Ops Analysis ---
 st.subheader("Sales & Operational Analysis")
 col1, col2 = st.columns(2)
-
 with col1:
     st.write("#### Total Ice Cream Sell Count")
     ice_cream_sell_count = df_items.groupby('item_name')['item_quantity'].sum().sort_values(ascending=False)
-    fig1, ax1 = plt.subplots()
-    sns.barplot(x=ice_cream_sell_count.index, y=ice_cream_sell_count.values, ax=ax1, palette='viridis')
-    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
-    st.pyplot(fig1)
-
+    fig, ax = plt.subplots()
+    sns.barplot(x=ice_cream_sell_count.index, y=ice_cream_sell_count.values, ax=ax, palette='viridis')
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+    st.pyplot(fig)
 with col2:
     st.write("#### Number of Orders Each Hour")
     df['hour'] = df['created_at'].dt.hour
     orders_each_hour = df.groupby('hour')['id'].count()
-    fig2, ax2 = plt.subplots()
-    sns.barplot(x=orders_each_hour.index, y=orders_each_hour.values, ax=ax2, palette='plasma')
-    st.pyplot(fig2)
+    fig, ax = plt.subplots()
+    sns.barplot(x=orders_each_hour.index, y=orders_each_hour.values, ax=ax, palette='plasma')
+    st.pyplot(fig)
+st.markdown("---")
+
+
+# --- Product & Customer Behavior Analysis ---
+st.subheader("Product & Customer Behavior Analysis")
+col_prod1, col_prod2 = st.columns(2)
+with col_prod1:
+    st.write("#### Sales by Category")
+    fig, ax = plt.subplots()
+    sns.barplot(x=sales_by_category.index, y=sales_by_category.values, ax=ax, palette='magma')
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+    ax.set_xlabel("Category")
+    ax.set_ylabel("Total Revenue")
+    st.pyplot(fig)
+with col_prod2:
+    st.write("#### Items per Order")
+    fig, ax = plt.subplots()
+    sns.barplot(x=items_dist.index, y=items_dist.values, ax=ax, palette='crest')
+    ax.set_xlabel("Number of Items in Order")
+    ax.set_ylabel("Count of Orders")
+    st.pyplot(fig)
 
 st.markdown("---")
 
-## --- UPDATED: Staff & Store Performance Section ---
-st.subheader("Staff & Store Performance")
-col_store1, col_store2, col_store3 = st.columns(3) # Added a third column
 
+# --- Staff & Store Performance ---
+st.subheader("Staff & Store Performance")
+col_store1, col_store2, col_store3 = st.columns(3)
 with col_store1:
     st.write("#### Total Sales by Store")
     sales_by_store = df.groupby('store')['total_amount'].sum().sort_values(ascending=False)
-    fig5, ax5 = plt.subplots()
-    sns.barplot(x=sales_by_store.index, y=sales_by_store.values, ax=ax5, palette='Set2')
-    ax5.set_xlabel('Store')
-    ax5.set_ylabel('Total Sales Amount')
-    st.pyplot(fig5)
-
+    fig, ax = plt.subplots()
+    sns.barplot(x=sales_by_store.index, y=sales_by_store.values, ax=ax, palette='Set2')
+    st.pyplot(fig)
 with col_store2:
     st.write("#### Daily Sales by Store")
     sales_by_store_day = df.groupby(['date', 'store'])['total_amount'].sum().unstack(fill_value=0)
-    fig6, ax6 = plt.subplots()
-    sales_by_store_day.plot(kind='line', marker='o', ax=ax6, figsize=(10, 6))
-    ax6.set_xlabel('Date')
-    ax6.set_ylabel('Total Sales Amount')
-    ax6.grid(True)
-    plt.setp(ax6.get_xticklabels(), rotation=45, ha='right')
-    ax6.legend(title='Store')
-    st.pyplot(fig6)
-
+    fig, ax = plt.subplots()
+    sales_by_store_day.plot(kind='line', marker='o', ax=ax, figsize=(10, 6))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+    ax.legend(title='Store')
+    st.pyplot(fig)
 with col_store3:
-    # --- NEW: Orders by User Chart ---
     st.write("#### Order Count by User")
     orders_by_user = df['name'].value_counts()
-    fig7, ax7 = plt.subplots()
-    sns.barplot(x=orders_by_user.index, y=orders_by_user.values, ax=ax7, palette='coolwarm')
-    ax7.set_xlabel('User Name')
-    ax7.set_ylabel('Number of Orders')
-    plt.setp(ax7.get_xticklabels(), rotation=45, ha='right')
-    st.pyplot(fig7)
+    fig, ax = plt.subplots()
+    sns.barplot(x=orders_by_user.index, y=orders_by_user.values, ax=ax, palette='coolwarm')
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+    st.pyplot(fig)
 
 
-# Display raw data in an expandable section
-with st.expander("Show Raw Data with Final Calculation"):
+# --- Raw Data Expander ---
+with st.expander("Show Raw Data"):
     st.dataframe(df[['id', 'name', 'store', 'subtotal', 'total_with_gst', 'total_amount', 'discount']])
